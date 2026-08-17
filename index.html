@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SAIA Corobrik Awards of Excellence — Atlas</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">
+      <span class="mark"></span>
+      <div>
+        <h1>Corobrik Awards of Excellence — Atlas</h1>
+        <div class="sub">south african institute of architects</div>
+      </div>
+    </div>
+    <div class="tally">Mapping <b id="tallyCount">…</b> recognised projects</div>
+  </header>
+
+  <div class="body-row">
+    <div class="sidebar">
+      <div class="filters">
+        <input class="search" id="searchBox" placeholder="Search by project, architect, or place…">
+        <div class="tier-toggles" id="tierToggles"></div>
+        <div class="year-toggles" id="yearToggles"></div>
+      </div>
+      <div class="list" id="listEl"></div>
+    </div>
+
+    <div class="map-wrap">
+      <div id="map"></div>
+      <div class="legend">
+        <div class="row"><span class="dot" style="background:#D82E26"></span> Award of Excellence</div>
+        <div class="row"><span class="dot" style="background:#B8842E"></span> Award of Merit</div>
+        <div class="row"><span class="dot" style="background:#736C5E"></span> Commendation</div>
+      </div>
+      <div class="banner" id="banner">
+        <button class="close" id="bannerClose">✕</button>
+        <div class="tier-tag" id="bTier"></div>
+        <h2 id="bName"></h2>
+        <div class="rule"></div>
+        <img class="photo" id="bPhoto" style="display:none;">
+        <div class="row"><span>Location — </span><span id="bLoc"></span></div>
+        <div class="row"><span>Architect — </span><span id="bArch"></span></div>
+        <div class="row" id="bEngRow"><span>Engineer — </span><span id="bEng"></span></div>
+        <div class="note" id="bNote"></div>
+        <span class="citation-label" id="bCiteLabel">Jury citation</span>
+        <div class="citation" id="bCitation"></div>
+        <div class="conf-note" id="bConf"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// List every award-cycle data file here. To add a new year, drop a new
+// data/awards-YYYY.json (same shape) into the data/ folder and add its
+// path to this array — nothing else in this file needs to change.
+const DATA_FILES = [
+  'data/awards-2026.json'
+];
+
+const TIER_META = {
+  excellence:{label:"Award of Excellence", color:"#D82E26"},
+  merit:{label:"Award of Merit", color:"#B8842E"},
+  commendation:{label:"Commendation", color:"#736C5E"},
+};
+
+let ALL_ENTRIES = [];
+let activeTiers = new Set(Object.keys(TIER_META));
+let activeYears = new Set();
+let selectedId = null;
+
+const map = L.map('map', {zoomControl:true}).setView([-28.5, 25.5], 5);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution:'&copy; OpenStreetMap contributors', maxZoom:18
+}).addTo(map);
+
+const clusterGroup = L.markerClusterGroup({
+  maxClusterRadius: 40,
+  iconCreateFunction: function(cluster){
+    return L.divIcon({
+      html:`<div style="background:#2B2E34;color:#FAF7F1;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'DM Sans',sans-serif;font-weight:700;font-size:12px;border:2px solid #FAF7F1;box-shadow:0 1px 4px rgba(0,0,0,.4);">${cluster.getChildCount()}</div>`,
+      className:'', iconSize:[30,30]
+    });
+  }
+});
+map.addLayer(clusterGroup);
+
+function makeIcon(color){
+  return L.divIcon({
+    className:'',
+    html:`<div style="width:16px;height:16px;border-radius:50%;background:${color};border:2px solid #FAF7F1;box-shadow:0 1px 4px rgba(0,0,0,.4);"></div>`,
+    iconSize:[16,16], iconAnchor:[8,8]
+  });
+}
+
+async function loadAllData(){
+  const results = await Promise.allSettled(DATA_FILES.map(f => fetch(f).then(r=>r.json())));
+  results.forEach((res, i) => {
+    if(res.status === 'fulfilled'){
+      const cycle = res.value.cycle;
+      res.value.entries.forEach((e, idx) => {
+        e._id = cycle + '-' + idx;
+        e._year = cycle;
+        e._marker = L.marker([e.lat, e.lng], {icon: makeIcon(TIER_META[e.tier].color)});
+        e._marker.on('click', () => selectEntry(e._id, true));
+        ALL_ENTRIES.push(e);
+      });
+    } else {
+      console.error('Failed to load', DATA_FILES[i], res.reason);
+    }
+  });
+  activeYears = new Set(ALL_ENTRIES.map(e => e._year));
+  document.getElementById('tallyCount').textContent = ALL_ENTRIES.length;
+  buildYearToggles();
+  buildTierToggles();
+  renderList();
+}
+
+function buildTierToggles(){
+  const toggles = document.getElementById('tierToggles');
+  toggles.innerHTML = '';
+  Object.entries(TIER_META).forEach(([key,meta])=>{
+    const btn = document.createElement('button');
+    btn.className = 'tier-btn active';
+    btn.innerHTML = `<span class="dot" style="background:${meta.color}"></span>${meta.label}`;
+    btn.onclick = ()=>{
+      if(activeTiers.has(key)){ activeTiers.delete(key); btn.classList.remove('active'); }
+      else { activeTiers.add(key); btn.classList.add('active'); }
+      renderList();
+    };
+    toggles.appendChild(btn);
+  });
+}
+
+function buildYearToggles(){
+  const years = [...new Set(ALL_ENTRIES.map(e=>e._year))].sort().reverse();
+  const wrap = document.getElementById('yearToggles');
+  if(years.length <= 1){ wrap.style.display='none'; return; }
+  wrap.innerHTML = '';
+  years.forEach(y=>{
+    const btn = document.createElement('button');
+    btn.className = 'tier-btn active';
+    btn.textContent = y;
+    btn.onclick = ()=>{
+      if(activeYears.has(y)){ activeYears.delete(y); btn.classList.remove('active'); }
+      else { activeYears.add(y); btn.classList.add('active'); }
+      renderList();
+    };
+    wrap.appendChild(btn);
+  });
+}
+
+function showBanner(e){
+  document.getElementById('bTier').textContent = TIER_META[e.tier].label.toUpperCase() + ' · ' + e._year;
+  document.getElementById('bTier').style.color = TIER_META[e.tier].color;
+  document.getElementById('bName').textContent = e.name;
+  const bPhoto = document.getElementById('bPhoto');
+  if(e.photo){ bPhoto.src = e.photo; bPhoto.style.display = 'block'; } else { bPhoto.style.display = 'none'; }
+  document.getElementById('bLoc').textContent = e.loc;
+  document.getElementById('bArch').textContent = e.arch;
+  const engRow = document.getElementById('bEngRow');
+  if(e.eng){ engRow.style.display='block'; document.getElementById('bEng').textContent = e.eng; }
+  else { engRow.style.display='none'; }
+  document.getElementById('bNote').textContent = e.note || '';
+  document.getElementById('bNote').style.display = e.note ? 'block' : 'none';
+  const hasCite = !!e.citation;
+  document.getElementById('bCiteLabel').style.display = hasCite ? 'block' : 'none';
+  document.getElementById('bCitation').style.display = hasCite ? 'block' : 'none';
+  document.getElementById('bCitation').textContent = e.citation || '';
+  document.getElementById('bConf').textContent = 'Location precision: ' + e.conf + '. Pin marks the general area pending a verified address.';
+  document.getElementById('banner').classList.add('show');
+}
+document.getElementById('bannerClose').onclick = ()=>document.getElementById('banner').classList.remove('show');
+
+function selectEntry(id, fly){
+  selectedId = id;
+  const e = ALL_ENTRIES.find(x=>x._id===id);
+  if(!e) return;
+  showBanner(e);
+  renderList();
+  if(fly) map.flyTo([e.lat,e.lng], 12, {duration:0.6});
+}
+
+function renderList(){
+  const q = document.getElementById('searchBox').value.trim().toLowerCase();
+  const listEl = document.getElementById('listEl');
+  listEl.innerHTML = '';
+  clusterGroup.clearLayers();
+
+  ALL_ENTRIES.forEach(e=>{
+    const tierOk = activeTiers.has(e.tier);
+    const yearOk = activeYears.has(e._year);
+    const hay = (e.name+' '+e.arch+' '+e.loc).toLowerCase();
+    const searchOk = !q || hay.includes(q);
+    if(!(tierOk && yearOk && searchOk)) return;
+
+    clusterGroup.addLayer(e._marker);
+
+    const el = document.createElement('div');
+    el.className = 'entry' + (selectedId===e._id ? ' selected':'');
+    el.innerHTML = `<div class="tier-tag" style="color:${TIER_META[e.tier].color}">${TIER_META[e.tier].label} · ${e._year}${e.citation ? '<span class="cite-flag">CITATION</span>' : ''}</div>
+      <div class="name">${e.name}</div>
+      <div class="loc">${e.loc}</div>
+      <div class="conf">${e.arch}</div>`;
+    el.onclick = ()=>selectEntry(e._id, true);
+    listEl.appendChild(el);
+  });
+}
+
+document.getElementById('searchBox').addEventListener('input', renderList);
+
+loadAllData();
+</script>
+</body>
+</html>
